@@ -1,0 +1,22 @@
+{
+	// Use IntelliSense to learn about possible attributes.
+	// Hover to view descriptions of existing attributes.
+	// For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+	"version": "0.2.0",
+	"configurations": [
+		{
+			"type": "lldb",
+			"request": "launch",
+			"name": "vlc3 debug",
+			"cargo": {
+				"args": [
+					"build",
+				]
+			},
+			"args": [
+				"/home/qyl/Desktop/Downloads/programming_tool/lcc-1.3/install/tests/loop/loop.obj",
+			]
+		}
+
+	]
+}
