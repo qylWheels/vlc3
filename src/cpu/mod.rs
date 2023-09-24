@@ -1,12 +1,13 @@
-use crate::memory::MEMORY;
-use crate::optional_utils::summary::SUMMARY;
-use crate::parse::ARGS;
-use instruction::{Instruction, OpCode};
+use crate::{
+	cpu::instruction::*,
+	memory::MEMORY,
+	optional_utils::summary::SUMMARY,
+	parse::ARGS,
+};
+use instruction::Instruction;
 use lazy_static::*;
-use libc;
 use register::Register;
 use std::{
-	io::{self, Write},
 	sync::{Arc, Mutex},
 	time::Instant,
 };
@@ -47,14 +48,14 @@ impl Cpu {
 		}
 	}
 
-	fn read(&self, which: Register) -> u16 {
+	pub fn read(&self, which: Register) -> u16 {
 		self.inner
 			.lock()
 			.unwrap()
 			.regs[which as usize]
 	}
 
-	fn write(&self, which: Register, data: u16) {
+	pub fn write(&self, which: Register, data: u16) {
 		self.inner
 			.lock()
 			.unwrap()
@@ -66,6 +67,13 @@ impl Cpu {
 			.lock()
 			.unwrap()
 			.running
+	}
+
+	pub fn halt(&self) {
+		self.inner
+			.lock()
+			.unwrap()
+			.running = false;
 	}
 
 	pub fn fetch(&self) -> u16 {
@@ -100,7 +108,7 @@ impl Cpu {
 		data & mask
 	}
 
-	fn update_condition_reg(&self, result: u16) {
+	pub fn update_condition_reg(&self, result: u16) {
 		if result == 0 {
 			self.write(Register::Cond, 0b010);	/* zero */
 			return;
@@ -113,46 +121,40 @@ impl Cpu {
 		}
 	}
 
-	pub fn decode(&self, raw_instr: u16) -> Instruction {
+	pub fn decode(&self, raw_instr: u16) -> Box<dyn Instruction> {
 		let opcode = raw_instr >> 12;
 
 		match opcode {
-			0b0000 => Cpu::decode_br(raw_instr),
-			0b0001 => Cpu::decode_add(raw_instr),
-			0b0010 => Cpu::decode_ld(raw_instr),
-			0b0011 => Cpu::decode_st(raw_instr),
-			0b0100 => Cpu::decode_jsr(raw_instr),
-			0b0101 => Cpu::decode_and(raw_instr),
-			0b0110 => Cpu::decode_ldr(raw_instr),
-			0b0111 => Cpu::decode_str(raw_instr),
-			0b1000 => Cpu::decode_rti(raw_instr),
-			0b1001 => Cpu::decode_not(raw_instr),
-			0b1010 => Cpu::decode_ldi(raw_instr),
-			0b1011 => Cpu::decode_sti(raw_instr),
-			0b1100 => Cpu::decode_jmp(raw_instr),
-			0b1101 => Cpu::decode_res(raw_instr),
-			0b1110 => Cpu::decode_lea(raw_instr),
-			0b1111 => Cpu::decode_trap(raw_instr),
+			0b0000 => Self::decode_br(raw_instr),
+			0b0010 => Self::decode_ld(raw_instr),
+			0b0001 => Self::decode_add(raw_instr),
+			0b0011 => Self::decode_st(raw_instr),
+			0b0100 => Self::decode_jsr(raw_instr),
+			0b0101 => Self::decode_and(raw_instr),
+			0b0110 => Self::decode_ldr(raw_instr),
+			0b0111 => Self::decode_str(raw_instr),
+			0b1000 => Self::decode_rti(raw_instr),
+			0b1001 => Self::decode_not(raw_instr),
+			0b1010 => Self::decode_ldi(raw_instr),
+			0b1011 => Self::decode_sti(raw_instr),
+			0b1100 => Self::decode_jmp(raw_instr),
+			0b1101 => Self::decode_res(raw_instr),
+			0b1110 => Self::decode_lea(raw_instr),
+			0b1111 => Self::decode_trap(raw_instr),
 			_ => unreachable!(),
 		}
 	}
 
-	fn decode_br(raw_instr: u16) -> Instruction {
+	fn decode_br(raw_instr: u16) -> Box<dyn Instruction> {
 		let n = ((raw_instr >> 11) & 1) == 1;
 		let z = ((raw_instr >> 10) & 1) == 1;
 		let p = ((raw_instr >> 9) & 1) == 1;
 		let offset = Self::sign_extend_16(raw_instr, 9);
 
-		Instruction::new(
-			OpCode::BR,
-			None,
-			[None, None, None],
-			Some(offset),
-			[Some(n), Some(z), Some(p)],
-		)
+		Box::new(br::Br::new(n, z, p, offset))
 	}
 
-	fn decode_add(raw_instr: u16) -> Instruction {
+	fn decode_add(raw_instr: u16) -> Box<dyn Instruction> {
 		let dest_reg = Register::from((raw_instr >> 9) & 0b111);
 		let src_reg1 = Register::from((raw_instr >> 6) & 0b111);
 		let imm_flag = ((raw_instr >> 5) & 1) == 1;
@@ -160,255 +162,129 @@ impl Cpu {
 		if imm_flag == false {
 			let src_reg2 = Register::from(raw_instr & 0b111);
 
-			Instruction::new(
-				OpCode::ADDR,
-				Some(imm_flag),
-				[Some(dest_reg), Some(src_reg1), Some(src_reg2)],
-				None,
-				[None, None, None],
+			Box::new(
+				addr::Addr::new(dest_reg, src_reg1, src_reg2)
 			)
 		} else {
 			let imm = Self::sign_extend_16(raw_instr, 5);
 
-			Instruction::new(
-				OpCode::ADDI,
-				Some(imm_flag),
-				[Some(dest_reg), Some(src_reg1), None],
-				Some(imm),
-				[None, None, None],
+			Box::new(
+				addi::Addi::new(dest_reg, src_reg1, imm)
 			)
 		}
 	}
 
-	fn decode_ld(raw_instr: u16) -> Instruction {
+	fn decode_ld(raw_instr: u16) -> Box<dyn Instruction> {
 		let dr = Register::from((raw_instr >> 9) & 0b111);
 		let offset = Self::sign_extend_16(raw_instr, 9);
 
-		Instruction::new(
-			OpCode::LD,
-			None,
-			[Some(dr), None, None],
-			Some(offset),
-			[None, None, None],
-		)
+		Box::new(ld::Ld::new(dr, offset))
 	}
 
-	fn decode_st(raw_instr: u16) -> Instruction {
+	fn decode_st(raw_instr: u16) -> Box<dyn Instruction> {
 		let sr = Register::from((raw_instr >> 9) & 0b111);
 		let offset = Self::sign_extend_16(raw_instr, 9);
 
-		Instruction::new(
-			OpCode::ST,
-			None,
-			[Some(sr), None, None],
-			Some(offset),
-			[None, None, None],
-		)
+		Box::new(st::St::new(sr, offset))
 	}
 
-	fn decode_jsr(raw_instr: u16) -> Instruction {
+	fn decode_jsr(raw_instr: u16) -> Box<dyn Instruction> {
 		let imm_flag: bool = ((raw_instr >> 11) & 1) == 1;
 
 		if imm_flag == true {
 			let offset = Self::sign_extend_16(raw_instr, 11);
-			Instruction::new(
-				OpCode::JSR,
-				Some(imm_flag),
-				[None, None, None],
-				Some(offset),
-				[None, None, None],
-			)
+			Box::new(jsr::Jsr::new(offset))
 		} else {
 			let base_reg = Register::from((raw_instr >> 6) & 0b111);
-			Instruction::new(
-				OpCode::JSRR,
-				Some(imm_flag),
-				[Some(base_reg), None, None],
-				None,
-				[None, None, None],
-			)
+			Box::new(jsrr::Jsrr::new(base_reg))
 		}
 	}
 
-	fn decode_and(raw_instr: u16) -> Instruction {
+	fn decode_and(raw_instr: u16) -> Box<dyn Instruction> {
 		let dr = Register::from((raw_instr >> 9) & 0b111);
 		let sr1 = Register::from((raw_instr >> 6) & 0b111);
 		let imm_flag = ((raw_instr >> 5) & 1) == 1;
 
 		if imm_flag == false {
 			let sr2 = Register::from(raw_instr & 0b111);
-			Instruction::new(
-				OpCode::ANDR,
-				Some(imm_flag),
-				[Some(dr), Some(sr1), Some(sr2)],
-				None,
-				[None, None, None],
-			)
+			Box::new(andr::Andr::new(dr, sr1, sr2))
 		} else {
 			let imm = Self::sign_extend_16(raw_instr, 5);
-			Instruction::new(
-				OpCode::ANDI,
-				Some(imm_flag),
-				[Some(dr), Some(sr1), None],
-				Some(imm),
-				[None, None, None],
-			)
+			Box::new(andi::Andi::new(dr, sr1, imm))
 		}
 	}
 
-	fn decode_ldr(raw_instr: u16) -> Instruction {
+	fn decode_ldr(raw_instr: u16) -> Box<dyn Instruction> {
 		let dr = Register::from((raw_instr >> 9) & 0b111);
 		let base_reg = Register::from((raw_instr >> 6) & 0b111);
 		let offset = Self::sign_extend_16(raw_instr, 6);
 
-		Instruction::new(
-			OpCode::LDR,
-			None,
-			[Some(dr), Some(base_reg), None],
-			Some(offset),
-			[None, None, None],
-		)
+		Box::new(ldr::Ldr::new(dr, base_reg, offset))
 	}
 
-	fn decode_str(raw_instr: u16) -> Instruction {
+	fn decode_str(raw_instr: u16) -> Box<dyn Instruction> {
 		let sr = Register::from((raw_instr >> 9) & 0b111);
 		let base_reg = Register::from((raw_instr >> 6) & 0b111);
 		let offset = Self::sign_extend_16(raw_instr, 6);
 
-		Instruction::new(
-			OpCode::STR,
-			None,
-			[Some(sr), Some(base_reg), None],
-			Some(offset),
-			[None, None, None],
-		)
+		Box::new(str::Str::new(sr, base_reg, offset))
 	}
 
-	fn decode_rti(_raw_instr: u16) -> Instruction {
-		Instruction::new(
-			OpCode::RTI,
-			None,
-			[None, None, None],
-			None,
-			[None, None, None],
-		)
+	fn decode_rti(_raw_instr: u16) -> Box<dyn Instruction> {
+		Box::new(rti::Rti::new())
 	}
 
-	fn decode_not(raw_instr: u16) -> Instruction {
+	fn decode_not(raw_instr: u16) -> Box<dyn Instruction> {
 		let dr = Register::from((raw_instr >> 9) & 0b111);
 		let sr = Register::from((raw_instr >> 6) & 0b111);
 
-		Instruction::new(
-			OpCode::NOT,
-			None,
-			[Some(dr), Some(sr), None],
-			None,
-			[None, None, None],
-		)
+		Box::new(not::Not::new(dr, sr))
 	}
 
-	fn decode_ldi(raw_instr: u16) -> Instruction {
+	fn decode_ldi(raw_instr: u16) -> Box<dyn Instruction> {
 		let dr = Register::from((raw_instr >> 9) & 0b111);
 		let offset = Self::sign_extend_16(raw_instr, 9);
 
-		Instruction::new(
-			OpCode::LDI,
-			None,
-			[Some(dr), None, None],
-			Some(offset),
-			[None, None, None]
-		)
+		Box::new(ldi::Ldi::new(dr, offset))
 	}
 
-	fn decode_sti(raw_instr: u16) -> Instruction {
+	fn decode_sti(raw_instr: u16) -> Box<dyn Instruction> {
 		let sr = Register::from((raw_instr >> 9) & 0b111);
 		let offset = Self::sign_extend_16(raw_instr, 9);
 
-		Instruction::new(
-			OpCode::STI,
-			None,
-			[Some(sr), None, None],
-			Some(offset),
-			[None, None, None],
-		)
+		Box::new(sti::Sti::new(sr, offset))
 	}
 
-	fn decode_jmp(raw_instr: u16) -> Instruction {
+	fn decode_jmp(raw_instr: u16) -> Box<dyn Instruction> {
 		let base_reg = Register::from((raw_instr >> 6) & 0b111);
 
-		Instruction::new(
-			OpCode::JMP,
-			None,
-			[Some(base_reg), None, None],
-			None,
-			[None, None, None],
-		)
+		Box::new(jmp::Jmp::new(base_reg))
 	}
 
-	fn decode_res(_raw_instr: u16) -> Instruction {
-		Instruction::new(
-			OpCode::RTI,
-			None,
-			[None, None, None],
-			None,
-			[None, None, None],
-		)
+	fn decode_res(_raw_instr: u16) -> Box<dyn Instruction> {
+		Box::new(res::Res::new())
 	}
 
-	fn decode_lea(raw_instr: u16) -> Instruction {
+	fn decode_lea(raw_instr: u16) -> Box<dyn Instruction> {
 		let dr = Register::from((raw_instr >> 9) & 0b111);
 		let offset = Self::sign_extend_16(raw_instr, 9);
 
-		Instruction::new(
-			OpCode::LEA,
-			None,
-			[Some(dr), None, None],
-			Some(offset),
-			[None, None, None],
-		)
+		Box::new(lea::Lea::new(dr, offset))
 	}
 
-	fn decode_trap(raw_instr: u16) -> Instruction {
+	fn decode_trap(raw_instr: u16) -> Box<dyn Instruction> {
 		let trapvect = Self::zero_extend_16(raw_instr, 8);
 
-		Instruction::new(
-			OpCode::TRAP,
-			None,
-			[None, None, None],
-			Some(trapvect),
-			[None, None, None],
-		)
+		Box::new(trap::Trap::new(trapvect))
 	}
 
-	pub fn execute(&self, instr: Instruction) {
+	pub fn execute(&self, instr: Box<dyn Instruction>) {
 		let mut begin = None;
 		if ARGS.summary() == true {
 			begin = Some(Instant::now());
 		}
 
-		let opcode = instr.opcode();
-		match opcode {
-			OpCode::ADDR => self.execute_addr(instr),
-			OpCode::ADDI => self.execute_addi(instr),
-			OpCode::ANDR => self.execute_andr(instr),
-			OpCode::ANDI => self.execute_andi(instr),
-			OpCode::BR => self.execute_br(instr),
-			OpCode::JMP => self.execute_jmp(instr),
-			OpCode::JSR => self.execute_jsr(instr),
-			OpCode::JSRR => self.execute_jsrr(instr),
-			OpCode::LD => self.execute_ld(instr),
-			OpCode::LDI => self.execute_ldi(instr),
-			OpCode::LDR => self.execute_ldr(instr),
-			OpCode::LEA => self.execute_lea(instr),
-			OpCode::NOT => self.execute_not(instr),
-			OpCode::RES => self.execute_res(instr),
-			OpCode::RTI => self.execute_rti(instr),
-			OpCode::ST => self.execute_st(instr),
-			OpCode::STI => self.execute_sti(instr),
-			OpCode::STR => self.execute_str(instr),
-			OpCode::TRAP => self.handle_trap(instr),
-			_ => unimplemented!(),
-		}
+		instr.execute();
 
 		let mut end = None;
 		if ARGS.summary() == true {
@@ -417,263 +293,8 @@ impl Cpu {
 
 		if ARGS.summary() == true {
 			SUMMARY.add_record(
-				opcode, 1, end.unwrap() - begin.unwrap()
+				instr.opcode(), 1, end.unwrap() - begin.unwrap()
 			);
 		}
-	}
-
-	fn execute_addr(&self, instr: Instruction) {
-		let regs = instr.regs();
-		let (dr, sr1, sr2) = (
-			regs[0].unwrap(),
-			regs[1].unwrap(),
-			regs[2].unwrap(),
-		);
-
-		let result = self.read(sr1).wrapping_add(self.read(sr2));
-		self.write(dr, result);
-		self.update_condition_reg(result);
-	}
-
-	fn execute_addi(&self, instr: Instruction) {
-		let regs = instr.regs();
-		let (dr, sr1, imm) = (
-			regs[0].unwrap(),
-			regs[1].unwrap(),
-			instr.imm().unwrap(),
-		);
-
-		let result = self.read(sr1).wrapping_add(imm);
-		self.write(dr, result);
-		self.update_condition_reg(result);
-	}
-
-	fn execute_andr(&self, instr: Instruction) {
-		let regs = instr.regs();
-		let (dr, sr1, sr2) = (
-			regs[0].unwrap(),
-			regs[1].unwrap(),
-			regs[2].unwrap(),
-		);
-
-		let result = self.read(sr1) & self.read(sr2);
-		self.write(dr, result);
-		self.update_condition_reg(result);
-	}
-
-	fn execute_andi(&self, instr: Instruction) {
-		let regs = instr.regs();
-		let (dr, sr1) = (regs[0].unwrap(), regs[1].unwrap());
-		let imm = instr.imm().unwrap();
-
-		let result = self.read(sr1) & imm;
-		self.write(dr, result);
-		self.update_condition_reg(result);
-	}
-
-	fn execute_br(&self, instr: Instruction) {
-		let cond = self.read(Register::Cond);
-		let nzp = instr.nzp();
-		let (n, z, p) = (
-			nzp[0].unwrap(),
-			nzp[1].unwrap(),
-			nzp[2].unwrap(),
-		);
-		let offset = instr.imm().unwrap();
-
-		if (n && (cond == 1 << 2)) || (z && (cond == 1 << 1)) || (p && (cond == 1 << 0)) {
-			self.write(
-				Register::PC,
-				self.read(Register::PC).wrapping_add(offset)
-			);
-		}
-	}
-
-	fn execute_jmp(&self, instr: Instruction) {
-		let target_addr = self.read(
-			instr.regs()[0].unwrap()
-		);
-
-		self.write(Register::PC, target_addr);
-	}
-
-	fn execute_jsr(&self, instr: Instruction) {
-		self.write(Register::R7, self.read(Register::PC));
-		let offset = instr.imm().unwrap();
-		self.write(
-			Register::PC,
-			self.read(Register::PC).wrapping_add(offset)
-		);
-	}
-
-	fn execute_jsrr(&self, instr: Instruction) {
-		let base_reg = instr.regs()[0].unwrap();
-		let target = self.read(base_reg);
-		self.write(Register::R7, self.read(Register::PC));
-		self.write(Register::PC, target);
-	}
-
-	fn execute_ld(&self, instr: Instruction) {
-		let dr = instr.regs()[0].unwrap();
-		let offset = instr.imm().unwrap();
-		let target_addr = self.read(Register::PC).wrapping_add(offset);
-		let data = MEMORY.read(target_addr);
-		self.write(dr, data);
-		self.update_condition_reg(data);
-	}
-
-	fn execute_ldi(&self, instr: Instruction) {
-		let target_addr = MEMORY.read(
-			self.read(Register::PC).wrapping_add(instr.imm().unwrap())
-		);
-
-		let result = MEMORY.read(target_addr);
-		
-		let dr = instr.regs()[0].unwrap();
-		self.write(dr, result);
-
-		self.update_condition_reg(result);
-	}
-
-	fn execute_ldr(&self, instr: Instruction) {
-		let regs = instr.regs();
-		let (dr, base_reg) = (
-			regs[0].unwrap(),
-			regs[1].unwrap()
-		);
-		let offset = instr.imm().unwrap();
-		let data = MEMORY.read(
-			self.read(base_reg).wrapping_add(offset)
-		);
-		self.write(dr, data);
-		self.update_condition_reg(data);
-	}
-
-	fn execute_lea(&self, instr: Instruction) {
-		let dr = instr.regs()[0].unwrap();
-		let offset = instr.imm().unwrap();
-		let result = self.read(Register::PC).wrapping_add(offset);
-		self.write(dr, result);
-		self.update_condition_reg(result);
-	}
-
-	fn execute_not(&self, instr: Instruction) {
-		let regs = instr.regs();
-		let (dr, sr) = (regs[0].unwrap(), regs[1].unwrap());
-		let result = !self.read(sr);
-		self.write(dr, result);
-		self.update_condition_reg(result);
-	}
-
-	fn execute_res(&self, _instr: Instruction) {
-		unimplemented!("This operation isn't allowed in vlc3");
-	}
-
-	fn execute_rti(&self, _instr: Instruction) {
-		unimplemented!("This operation isn't allowed in vlc3");
-	}
-
-	fn execute_st(&self, instr: Instruction) {
-		let sr = instr.regs()[0].unwrap();
-		let offset = instr.imm().unwrap();
-		let addr = self.read(Register::PC).wrapping_add(offset);
-		MEMORY.write(addr, self.read(sr));
-	}
-
-	fn execute_sti(&self, instr: Instruction) {
-		let sr = instr.regs()[0].unwrap();
-		let offset = instr.imm().unwrap();
-
-		let target_addr = MEMORY
-			.read(self.read(Register::PC))
-			.wrapping_add(offset);
-
-		MEMORY.write(target_addr, self.read(sr));
-	}
-
-	fn execute_str(&self, instr: Instruction) {
-		let regs = instr.regs();
-		let (sr, base_reg) = (
-			regs[0].unwrap(),
-			regs[1].unwrap(),
-		);
-		let offset = instr.imm().unwrap();
-
-		let addr = self.read(base_reg).wrapping_add(offset);
-		MEMORY.write(addr, self.read(sr));
-	}
-
-	fn handle_trap(&self, instr: Instruction) {
-		self.write(Register::R7, self.read(Register::PC));
-		let trapvect = instr.imm().unwrap();
-
-		match trapvect {
-			0x20 => self.handle_trap_getc(),	/* get character but not echo it */
-			0x21 => self.handle_trap_out(),		/* output a character */
-			0x22 => self.handle_trap_puts(),	/* output a word string */
-			0x23 => self.handle_trap_in(),		/* get character and echo it */
-			0x24 => self.handle_trap_putsp(),	/* output a byte string */
-			0x25 => self.halt(),				/* halt the vm */
-			_ => unreachable!(),
-		}
-	}
-
-	fn handle_trap_getc(&self) {
-		let ch;
-		unsafe {
-			ch = libc::getchar() as u16;
-		}
-		self.write(Register::R0, ch);
-		self.update_condition_reg(ch);
-	}
-
-	fn handle_trap_out(&self) {
-		let ch = self.read(Register::R0) & 0xff;
-		print!("{}", char::from(ch as u8));
-		let _ = io::stdout().flush();
-	}
-
-	fn handle_trap_puts(&self) {
-		let start_addr = self.read(Register::R0);
-		let s = (start_addr..)
-			.take_while(|&addr| {
-				0 != MEMORY.read(addr)
-			})
-			.map(|addr| {
-				let ch = MEMORY.read(addr);
-				char::from(ch as u8)
-			})
-			.collect::<String>();
-		print!("{s}");
-		let _ = io::stdout().flush();
-	}
-
-	fn handle_trap_in(&self) {
-		self.handle_trap_getc();
-		self.handle_trap_out();
-	}
-
-	fn handle_trap_putsp(&self) {
-		let start_addr = self.read(Register::R0);
-		let s = (start_addr..)
-			.take_while(|&addr| 0 != {
-				MEMORY.read(addr)
-			})
-			.map(|num| {
-				let c1 = char::from((num & 0xff) as u8);
-				let c2 = char::from((num >> 8) as u8);
-				format!("{}{}", c1.to_string(), c2.to_string())
-			})
-			.collect::<String>();
-		print!("{s}");
-		let _ = io::stdout().flush();
-	}
-
-	fn halt(&self) {
-		println!("HALT");
-		self.inner
-			.lock()
-			.unwrap()
-			.running = false;
 	}
 }

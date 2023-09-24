@@ -1,5 +1,4 @@
 use enum_iterator::Sequence;
-use super::register::Register;
 
 #[derive(Clone, Copy, Debug, Sequence)]
 pub enum OpCode {
@@ -51,47 +50,3 @@ impl From<OpCode> for String {
 		}
 	}
 }
-
-#[allow(dead_code)]
-#[derive(Debug)]
-pub struct Instruction {
-	opcode: OpCode,
-	imm_flag: Option<bool>,
-	regs: [Option<Register>; 3],
-	imm: Option<u16>,
-	nzp: [Option<bool>; 3],
-}
-
-#[allow(dead_code)]
-impl Instruction {
-	pub fn new(
-		opcode: OpCode,
-		imm_flag: Option<bool>,
-		regs: [Option<Register>; 3],
-		imm: Option<u16>,
-		nzp: [Option<bool>; 3],
-	) -> Self {
-		Self { opcode, imm_flag, regs, imm, nzp }
-	}
-
-	pub fn opcode(&self) -> OpCode {
-		self.opcode
-	}
-
-	pub fn imm_flag(&self) -> Option<bool> {
-		self.imm_flag
-	}
-
-	pub fn regs(&self) -> [Option<Register>; 3] {
-		self.regs
-	}
-
-	pub fn imm(&self) -> Option<u16> {
-		self.imm
-	}
-
-	pub fn nzp(&self) -> [Option<bool>; 3] {
-		self.nzp
-	}
-}
-
