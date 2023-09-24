@@ -1,4 +1,4 @@
-use crate::cpu::instruction::OpCode;
+use crate::cpu::instruction::opcode::OpCode;
 use enum_iterator::all;
 use lazy_static::*;
 use std::{
