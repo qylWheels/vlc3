@@ -1,0 +1,2 @@
+- use handles instead of global structures
+- add error handling utilities
